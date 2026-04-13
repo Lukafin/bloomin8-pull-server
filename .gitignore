@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.tmp
+.env
+bloomin8_pull_config.json

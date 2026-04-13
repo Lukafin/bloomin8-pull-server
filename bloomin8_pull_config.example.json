@@ -1,0 +1,11 @@
+{
+  "timezone": "Europe/Ljubljana",
+  "scheduled_local_time": "08:30",
+  "retry_interval_minutes": 15,
+  "public_base_url": "https://your-host.ts.net/bloomin8-pull",
+  "device_token": "replace-with-random-secret",
+  "image_token": "replace-with-random-url-token",
+  "device_width": 1200,
+  "device_height": 1600,
+  "latest_json_path": "/absolute/path/to/latest.json"
+}

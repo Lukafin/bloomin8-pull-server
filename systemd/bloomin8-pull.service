@@ -1,0 +1,14 @@
+[Unit]
+Description=Bloomin8 Pull Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/bloomin8-pull-server
+ExecStart=/usr/bin/python3 %h/projects/bloomin8-pull-server/bloomin8_pull_server.py --host 127.0.0.1 --port 8092 --config %h/projects/bloomin8-pull-server/bloomin8_pull_config.json
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
