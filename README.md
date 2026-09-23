@@ -8,7 +8,7 @@ It exposes:
 - `GET /eink_signal`
 - `GET /image/<token>/<name>_L.jpg`
 
-The server reads the latest daily artists image from a local archive, prepares a BLOOMIN8-compatible landscape JPEG, and returns a public image URL to the frame.
+The server reads the latest daily image from the public Famous People Infographic Network archive (or an optional local archive), prepares a BLOOMIN8-compatible landscape JPEG, and returns a public image URL to the frame.
 
 ## Why this exists
 
@@ -25,7 +25,7 @@ This avoids the push-while-sleeping problem common with battery-powered e-ink fr
 
 - token-protected `/eink_pull` via `X-Access-Token`
 - tokenized image URL path segment
-- automatic latest-image lookup from `latest.json`
+- automatic latest-image lookup from a remote or local `latest.json`
 - dynamic JPEG preparation using `ffmpeg`
 - landscape `_L.jpg` output for BLOOMIN8 pull mode
 - optional `/eink_signal` feedback endpoint
@@ -65,7 +65,17 @@ Important fields:
 - `image_token`
 - `device_width`
 - `device_height`
-- `latest_json_path`
+- `latest_json_url` and `image_base_url` for the public archive
+- `latest_json_path` as an alternative local source
+
+For the live Infographic Network, use:
+
+```text
+latest_json_url=https://lukafin.github.io/artists-infographic-archive/latest.json
+image_base_url=https://lukafin.github.io/artists-infographic-archive/
+```
+
+Remote metadata requests bypass intermediary caches so a newly published morning infographic is seen promptly.
 
 ## Run locally
 

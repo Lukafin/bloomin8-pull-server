@@ -14,7 +14,9 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.error import URLError
+from urllib.parse import parse_qs, quote, urljoin, urlparse
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 LOG = logging.getLogger("bloomin8_pull_server")
@@ -30,7 +32,10 @@ class Config:
     image_token: str
     device_width: int
     device_height: int
-    latest_json_path: Path
+    latest_json_path: Path | None
+    latest_json_url: str
+    image_base_url: str
+    remote_timeout_seconds: int
 
     @property
     def timezone(self) -> ZoneInfo:
@@ -46,6 +51,24 @@ class PullServer:
         self.config = config
 
     def load_latest_metadata(self) -> dict[str, Any]:
+        if self.config.latest_json_url:
+            separator = "&" if "?" in self.config.latest_json_url else "?"
+            url = f"{self.config.latest_json_url}{separator}v={int(datetime.now(timezone.utc).timestamp())}"
+            request = Request(
+                url,
+                headers={
+                    "User-Agent": "Bloomin8PullServer/1.1",
+                    "Cache-Control": "no-cache",
+                },
+            )
+            try:
+                with urlopen(request, timeout=self.config.remote_timeout_seconds) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise PullServerError(f"Could not load remote latest.json: {exc}") from exc
+
+        if self.config.latest_json_path is None:
+            raise PullServerError("No latest.json source configured")
         try:
             return json.loads(self.config.latest_json_path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
@@ -53,10 +76,32 @@ class PullServer:
         except json.JSONDecodeError as exc:
             raise PullServerError(f"Invalid latest.json: {exc}") from exc
 
-    def latest_image_path(self, metadata: dict[str, Any]) -> Path:
+    def latest_image_path(self, metadata: dict[str, Any], temp_dir: Path) -> Path:
         image_filename = metadata.get("image_filename")
         if not image_filename:
             raise PullServerError("latest.json missing image_filename")
+
+        image_filename = str(image_filename)
+        if Path(image_filename).name != image_filename:
+            raise PullServerError("latest.json image_filename must be a basename")
+
+        if self.config.latest_json_url:
+            image_base_url = self.config.image_base_url or urljoin(self.config.latest_json_url, ".")
+            image_url = urljoin(f"{image_base_url.rstrip('/')}/", quote(image_filename))
+            request = Request(image_url, headers={"User-Agent": "Bloomin8PullServer/1.1"})
+            try:
+                with urlopen(request, timeout=self.config.remote_timeout_seconds) as response:
+                    image_bytes = response.read(25 * 1024 * 1024 + 1)
+            except (URLError, TimeoutError) as exc:
+                raise PullServerError(f"Could not download latest image: {exc}") from exc
+            if len(image_bytes) > 25 * 1024 * 1024:
+                raise PullServerError("Latest image exceeds 25 MiB limit")
+            image_path = temp_dir / image_filename
+            image_path.write_bytes(image_bytes)
+            return image_path
+
+        if self.config.latest_json_path is None:
+            raise PullServerError("No local latest.json path configured")
         image_path = self.config.latest_json_path.parent / image_filename
         if not image_path.exists():
             raise PullServerError(f"Latest image does not exist: {image_path}")
@@ -118,12 +163,13 @@ class PullServer:
 
     def build_image_bytes(self) -> tuple[bytes, str]:
         metadata = self.load_latest_metadata()
-        source_image = self.latest_image_path(metadata)
         target_width, target_height = self.landscape_storage_dimensions()
 
         with tempfile.TemporaryDirectory(prefix="bloomin8-pull-") as temp_dir:
-            landscape_path = Path(temp_dir) / "landscape.jpg"
-            final_path = Path(temp_dir) / "latest_L.jpg"
+            temp_path = Path(temp_dir)
+            source_image = self.latest_image_path(metadata, temp_path)
+            landscape_path = temp_path / "landscape.jpg"
+            final_path = temp_path / "latest_L.jpg"
 
             scale_and_pad = [
                 "ffmpeg",
@@ -160,7 +206,7 @@ class PullServer:
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    server_version = "Bloomin8PullServer/1.0"
+    server_version = "Bloomin8PullServer/1.1"
 
     @property
     def app(self) -> PullServer:
@@ -260,6 +306,7 @@ def run_ffmpeg(command: list[str]) -> None:
 
 def load_config(path: Path) -> Config:
     data = json.loads(path.read_text(encoding="utf-8"))
+    latest_json_path = data.get("latest_json_path")
     return Config(
         timezone_name=data["timezone"],
         scheduled_local_time=data["scheduled_local_time"],
@@ -269,7 +316,10 @@ def load_config(path: Path) -> Config:
         image_token=data["image_token"],
         device_width=int(data["device_width"]),
         device_height=int(data["device_height"]),
-        latest_json_path=Path(data["latest_json_path"]),
+        latest_json_path=Path(latest_json_path) if latest_json_path else None,
+        latest_json_url=str(data.get("latest_json_url") or "").strip(),
+        image_base_url=str(data.get("image_base_url") or "").strip(),
+        remote_timeout_seconds=int(data.get("remote_timeout_seconds", 20)),
     )
 
 
