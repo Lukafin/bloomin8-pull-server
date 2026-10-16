@@ -92,6 +92,17 @@ next configured local slot when the device is awake (tokens are not printed).
 
 ### Data provenance and limitations
 
+- Optional bottom-right rain indicator: one Open-Meteo multi-location request
+  retrieves today's `precipitation_probability_max` for Kranj and Ljubljana in
+  `Europe/Ljubljana`. Draw the vector umbrella if either city's maximum is at
+  least 30%. This is the day's **maximum hourly precipitation probability**, not
+  the cumulative probability of rain sometime during the entire day. The footer
+  attributes Open-Meteo; no browser, emoji font or extra cron is needed. Validate
+  local date, locations, timezone, percent units and range. Missing forecasts
+  show `Vreme: ?`, never assumed dry; one positive city still triggers the icon
+  if the other is missing. Mock forecasts remain explicitly labeled demo and
+  cannot enter the daily feed. Weather failure does not discard rail/road data.
+
 - SŽ's requested help/delays page returned Cloudflare 403 during implementation.
   It is **not** scraped or represented as solved. Rail data comes from the
   independent public `zamudil.si` frontend backend, not an official SŽ API:

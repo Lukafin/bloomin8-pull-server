@@ -122,6 +122,23 @@ def render_board(data: dict, destination: Path) -> Path:
     sources = 'DEMO / brez živih virov' if is_mock else 'zamudil.si (neuradno) · Promet.si / DARS'
     d.text((left, 1481), 'VIRA  ' + sources, font=font(25), fill=INK)
     d.text((left, 1523), 'Jutranji posnetek. Pred odhodom preveri aktualno stanje.', font=font(24), fill=INK)
+    weather = data.get('weather', {})
+    if weather:
+        caption = 'Vreme: DEMO · izmišljena napoved' if is_mock else 'Vreme: Open-Meteo · dnevni vrh verjetnosti padavin'
+        if weather.get('status') == 'partial':
+            caption += ' · delni podatki'
+        d.text((left, 1563), caption, font=font(19), fill=INK)
+        if weather.get('rain_possible') is True:
+            # Plain vector umbrella: stable on e-ink; no emoji font dependency.
+            d.pieslice((1020, 1483, 1130, 1553), 180, 360, fill=INK)
+            d.line((1075, 1518, 1075, 1550), fill=INK, width=6)
+            d.arc((1053, 1539, 1075, 1561), 0, 180, fill=INK, width=6)
+            d.line((1053, 1547, 1053, 1550), fill=INK, width=6)
+            probability = weather.get('max_probability')
+            label = f'DEŽ {probability:.0f}%' if isinstance(probability, (int, float)) else 'MOŽEN DEŽ'
+            d.text((1015, 1569), label, font=font(19, bold=True), fill=INK)
+        elif weather.get('rain_possible') is None:
+            d.text((1000, 1519), 'Vreme: ?', font=font(24, bold=True), fill=INK)
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, format='JPEG', quality=94, subsampling=2, progressive=False)
     return destination
@@ -130,6 +147,7 @@ def render_board(data: dict, destination: Path) -> Path:
 def mock_data(now: datetime) -> dict:
     return {
         'generated_at': now.isoformat(), 'mock': True,
+        'weather': {'status': 'ok', 'rain_possible': True, 'max_probability': 70},
         'trains': {'status': 'ok', 'items': [
             {'train': 'LP 0001 · TESTNI VLAK', 'departure': '06:12', 'delay_minutes': 8},
             {'train': 'RE 0002 · TESTNI VLAK', 'departure': '06:38', 'delay_minutes': 15},
