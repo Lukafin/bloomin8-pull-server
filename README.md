@@ -63,7 +63,9 @@ flowchart LR
   Sources --> Pillow[Pillow: 1200x1600 baseline 4:2:0 JPEG]
   Pillow --> Cache[Private atomic snapshot]
   Frame[Frame native pull at 06:00] --> Cache
-  Cache --> Next[Next wake: infographic at 07:45]
+  Cache --> Delivery[Native JPEG or raw-on-wake LAN worker]
+  Delivery --> Proof[Observed writing/displaying then ready]
+  Proof --> Next[Next wake: infographic at 07:45]
   Next --> Tomorrow[Next wake: commute tomorrow at 06:00]
 ```
 
@@ -89,6 +91,43 @@ config cannot wake a sleeping device or rewrite a wake already stored on it.
 The first already-stored older wake will adopt the two-slot cycle, but can miss
 the first 06:00 edition. Use `configure_bloomin8_pull.py --arm-next` to set the
 next configured local slot when the device is awake (tokens are not printed).
+
+### Reliable monochrome delivery after native wake
+
+The optional `commute_delivery_mode: raw-on-wake` retains the frame's scheduled
+06:00 wake but bypasses its unreliable JPEG decode/dither path for the commuter
+board. Configure `device_base_url` to its current LAN URL and `expected_device_sn`
+to the verified exact frame serial. The HTTP server needs Pillow and requests in
+this mode. The infographic lane and its JPEG preparation remain unchanged.
+
+On the authenticated commuter pull, the server replies **HTTP 200**, with JSON
+`status: 204` and the next 07:45 wake; an asynchronous worker delivers documented
+3-bit monochrome pixel data while the device is already awake. It never polls or
+pushes to a sleeping frame overnight. It verifies serial, exact dimensions, the
+complete pixel-packing round-trip, raw-upload path, an observed status 3→100
+transition, and the next native wake read-back. This is not claiming the vendor
+native pull accepts raw images: the native wake and LAN raw upload are distinct
+parts of the integration.
+
+Only a valid device token **and** its exact `device_id` can start that worker.
+Readiness probes do not trigger writes. One worker runs at a time, successful
+snapshot delivery is deduplicated, and a private atomic `delivery.json` records
+success or failure. A bounded failed worker never becomes a success receipt.
+An optional 06:05 Ljubljana no-agent check can alert on a missing/failed current
+receipt; successful checks are silent:
+
+```bash
+python3 frame_raw.py --check-config /private/path/frame-config.json
+```
+
+For an operator-authorized native-wake test outside the morning window, arm the
+device with the same public base plus `/commute-preview` and a future UTC wake.
+The protected `/commute-preview/eink_pull` uses today's real snapshot and the
+same delivery worker. On successful completion the worker restores the normal
+upstream and verifies the next regular local slot. Verify actual wake/request,
+3→100, receipt and device settings; an HTTP probe alone is not an end-to-end test.
+If a test fails before restoration, restore the normal upstream and next wake
+explicitly on the awake device. Never leave a test upstream accidentally armed.
 
 ### Data provenance and limitations
 
