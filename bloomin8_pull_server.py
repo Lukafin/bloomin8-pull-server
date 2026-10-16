@@ -37,10 +37,14 @@ class Config:
     image_base_url: str
     remote_timeout_seconds: int
     display_orientation: str = "landscape"
+    commute_local_time: str = "06:00"
+    commute_snapshot_path: Path | None = None
 
     def __post_init__(self) -> None:
         if self.display_orientation not in {"portrait", "landscape"}:
             raise ValueError("display_orientation must be portrait or landscape")
+        if self.commute_snapshot_path and self.commute_local_time >= self.scheduled_local_time:
+            raise ValueError("commute time must precede infographic time")
 
     @property
     def timezone(self) -> ZoneInfo:
@@ -150,6 +154,22 @@ class PullServer:
         return f"{self.config.public_base_url}/image/{self.config.image_token}/{filename}"
 
     def build_pull_response(self, request_query: dict[str, list[str]]) -> dict[str, Any]:
+        if self.config.commute_snapshot_path:
+            slot, next_time = self.display_slot(request_query)
+            if slot == "waiting":
+                return {"status": 204, "message": "Waiting for morning commute edition",
+                        "data": {"next_cron_time": next_time}}
+            if slot == "commute":
+                try:
+                    snapshot = self.load_commute_snapshot()
+                except PullServerError as exc:
+                    retry = datetime.now(timezone.utc) + timedelta(minutes=1)
+                    retry = min(retry, datetime.fromisoformat(next_time.replace("Z", "+00:00")))
+                    return {"status": 204, "message": str(exc),
+                            "data": {"next_cron_time": utc_string(retry)}}
+                return {"status": 200, "type": "SHOW", "message": "Morning commute snapshot",
+                        "data": {"next_cron_time": next_time,
+                                 "image_url": f"{self.config.public_base_url}/image/{self.config.image_token}/{snapshot['image_filename']}"}}
         metadata = self.load_latest_metadata()
         latest_date = str(metadata.get("date") or "")
         today_local = self.todays_local_date()
@@ -162,7 +182,7 @@ class PullServer:
                 "type": "SHOW",
                 "message": "Latest daily image available",
                 "data": {
-                    "next_cron_time": self.next_scheduled_utc(completed_date=latest_date),
+                    "next_cron_time": self.display_slot(request_query)[1] if self.config.commute_snapshot_path else self.next_scheduled_utc(completed_date=latest_date),
                     "image_url": self.image_public_url(metadata),
                 },
             }
@@ -171,9 +191,52 @@ class PullServer:
             "status": 204,
             "message": f"Today's image is not published yet (latest: {latest_date or 'unknown'})",
             "data": {
-                "next_cron_time": self.retry_time_utc(),
+                "next_cron_time": min(self.retry_time_utc(), self.display_slot(request_query)[1]) if self.config.commute_snapshot_path else self.retry_time_utc(),
             },
         }
+
+    def display_slot(self, request_query: dict[str, list[str]]) -> tuple[str, str]:
+        """Two local-clock slots, allowing a bounded early device wake (clock drift)."""
+        now = datetime.now(self.config.timezone)
+        requested = first_or_empty(request_query.get("cron_time"))
+        try:
+            wake = datetime.fromisoformat(requested.replace("Z", "+00:00"))
+            if wake.tzinfo and abs((wake - now).total_seconds()) <= 300:
+                now = max(now, wake.astimezone(self.config.timezone))
+        except (ValueError, TypeError):
+            pass
+        ch, cm = map(int, self.config.commute_local_time.split(":"))
+        ih, im = map(int, self.config.scheduled_local_time.split(":"))
+        commute = now.replace(hour=ch, minute=cm, second=0, microsecond=0)
+        infographic = now.replace(hour=ih, minute=im, second=0, microsecond=0)
+        if now < commute:
+            return "waiting", utc_string(commute)
+        if now < infographic:
+            return "commute", utc_string(infographic)
+        return "infographic", utc_string(commute + timedelta(days=1))
+
+    def load_commute_snapshot(self) -> dict[str, Any]:
+        try:
+            if self.config.commute_snapshot_path is None:
+                raise ValueError("Commute display is not enabled")
+            snapshot = json.loads(self.config.commute_snapshot_path.read_text(encoding="utf-8"))
+            if snapshot.get("mock") is not False:
+                raise ValueError("Mock snapshots are never served by the daily feed")
+            generated = datetime.fromisoformat(snapshot["generated_at"])
+            if generated.tzinfo is None:
+                raise ValueError("Commute timestamp must include a timezone")
+            now = datetime.now(self.config.timezone)
+            if generated.astimezone(self.config.timezone).date() != now.date() or generated > now + timedelta(minutes=5):
+                raise ValueError("Today's commute snapshot is not ready")
+            name = snapshot["image_filename"]
+            if not isinstance(name, str) or Path(name).name != name or not name.startswith("commute-") or not name.endswith("_P.jpg"):
+                raise ValueError("Invalid commute image filename")
+            image = self.config.commute_snapshot_path.parent / name
+            if not image.is_file():
+                raise ValueError("Commute image is missing")
+            return snapshot
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise PullServerError(str(exc)) from exc
 
     def build_image_bytes(self) -> tuple[bytes, str]:
         metadata = self.load_latest_metadata()
@@ -263,7 +326,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.respond_json(HTTPStatus.FORBIDDEN, {"error": "invalid token"})
             return
         query = parse_qs(parsed.query)
-        payload = self.app.build_pull_response(query)
+        try:
+            payload = self.app.build_pull_response(query)
+        except PullServerError as exc:
+            next_time = self.app.retry_time_utc()
+            if self.app.config.commute_snapshot_path:
+                next_time = min(next_time, self.app.display_slot(query)[1])
+            payload = {"status": 204, "message": str(exc), "data": {"next_cron_time": next_time}}
         self.respond_json(HTTPStatus.OK, payload)
 
     def handle_eink_signal(self, parsed) -> None:
@@ -276,11 +345,25 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not parsed.path.startswith(prefix):
             self.respond_json(HTTPStatus.FORBIDDEN, {"error": "invalid image token"}, include_body=include_body)
             return
-        try:
-            image_bytes, filename = self.app.build_image_bytes()
-        except PullServerError as exc:
-            self.respond_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}, include_body=include_body)
-            return
+        requested_name = parsed.path[len(prefix):]
+        if requested_name.startswith("commute-"):
+            try:
+                snapshot = self.app.load_commute_snapshot()
+                if requested_name != snapshot["image_filename"]:
+                    raise PullServerError("Commute image is not the current snapshot")
+                snapshot_path = self.app.config.commute_snapshot_path
+                assert snapshot_path is not None
+                image_bytes = (snapshot_path.parent / requested_name).read_bytes()
+                filename = requested_name
+            except (PullServerError, OSError) as exc:
+                self.respond_json(HTTPStatus.NOT_FOUND, {"error": str(exc)}, include_body=include_body)
+                return
+        else:
+            try:
+                image_bytes, filename = self.app.build_image_bytes()
+            except PullServerError as exc:
+                self.respond_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}, include_body=include_body)
+                return
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Content-Length", str(len(image_bytes)))
@@ -304,6 +387,10 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 def first_or_empty(values: list[str] | None) -> str:
     return values[0] if values else ""
+
+
+def utc_string(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def slugify(value: str) -> str:
@@ -337,6 +424,8 @@ def load_config(path: Path) -> Config:
         image_base_url=str(data.get("image_base_url") or "").strip(),
         remote_timeout_seconds=int(data.get("remote_timeout_seconds", 20)),
         display_orientation=str(data.get("display_orientation", "landscape")),
+        commute_local_time=str(data.get("commute_local_time", "06:00")),
+        commute_snapshot_path=Path(data["commute_snapshot_path"]) if data.get("commute_snapshot_path") else None,
     )
 
 
