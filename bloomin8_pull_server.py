@@ -39,12 +39,19 @@ class Config:
     display_orientation: str = "landscape"
     commute_local_time: str = "06:00"
     commute_snapshot_path: Path | None = None
+    commute_delivery_mode: str = "native-jpeg"
+    device_base_url: str = ""
+    expected_device_sn: str = ""
 
     def __post_init__(self) -> None:
         if self.display_orientation not in {"portrait", "landscape"}:
             raise ValueError("display_orientation must be portrait or landscape")
         if self.commute_snapshot_path and self.commute_local_time >= self.scheduled_local_time:
             raise ValueError("commute time must precede infographic time")
+        if self.commute_delivery_mode not in {"native-jpeg", "raw-on-wake"}:
+            raise ValueError("Unknown commute delivery mode")
+        if self.commute_delivery_mode == "raw-on-wake" and not (self.commute_snapshot_path and self.device_base_url and self.expected_device_sn):
+            raise ValueError("Raw-on-wake needs snapshot path, LAN device URL and exact serial")
 
     @property
     def timezone(self) -> ZoneInfo:
@@ -58,6 +65,10 @@ class PullServerError(RuntimeError):
 class PullServer:
     def __init__(self, config: Config) -> None:
         self.config = config
+        self.raw_delivery = None
+        if config.commute_delivery_mode == "raw-on-wake":
+            from frame_raw import RawWakeDelivery
+            self.raw_delivery = RawWakeDelivery(config)
 
     def load_latest_metadata(self) -> dict[str, Any]:
         if self.config.latest_json_url:
@@ -160,16 +171,7 @@ class PullServer:
                 return {"status": 204, "message": "Waiting for morning commute edition",
                         "data": {"next_cron_time": next_time}}
             if slot == "commute":
-                try:
-                    snapshot = self.load_commute_snapshot()
-                except PullServerError as exc:
-                    retry = datetime.now(timezone.utc) + timedelta(minutes=1)
-                    retry = min(retry, datetime.fromisoformat(next_time.replace("Z", "+00:00")))
-                    return {"status": 204, "message": str(exc),
-                            "data": {"next_cron_time": utc_string(retry)}}
-                return {"status": 200, "type": "SHOW", "message": "Morning commute snapshot",
-                        "data": {"next_cron_time": next_time,
-                                 "image_url": f"{self.config.public_base_url}/image/{self.config.image_token}/{snapshot['image_filename']}"}}
+                return self.build_commute_response(next_time)
         metadata = self.load_latest_metadata()
         latest_date = str(metadata.get("date") or "")
         today_local = self.todays_local_date()
@@ -194,6 +196,20 @@ class PullServer:
                 "next_cron_time": min(self.retry_time_utc(), self.display_slot(request_query)[1]) if self.config.commute_snapshot_path else self.retry_time_utc(),
             },
         }
+
+    def build_commute_response(self, next_time: str) -> dict[str, Any]:
+        try:
+            snapshot = self.load_commute_snapshot()
+        except PullServerError as exc:
+            retry = datetime.now(timezone.utc) + timedelta(minutes=1)
+            retry = min(retry, datetime.fromisoformat(next_time.replace("Z", "+00:00")))
+            return {"status": 204, "message": str(exc), "data": {"next_cron_time": utc_string(retry)}}
+        if self.raw_delivery is not None:
+            return {"status": 204, "message": "Commute pixel delivery uses the authenticated native wake",
+                    "data": {"next_cron_time": next_time, "delivery": "raw-on-wake"}}
+        return {"status": 200, "type": "SHOW", "message": "Morning commute snapshot",
+                "data": {"next_cron_time": next_time,
+                         "image_url": f"{self.config.public_base_url}/image/{self.config.image_token}/{snapshot['image_filename']}"}}
 
     def display_slot(self, request_query: dict[str, list[str]]) -> tuple[str, str]:
         """Two local-clock slots, allowing a bounded early device wake (clock drift)."""
@@ -309,6 +325,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/eink_pull":
             self.handle_eink_pull(parsed)
             return
+        if parsed.path == "/commute-preview/eink_pull":
+            self.handle_eink_pull(parsed, preview=True)
+            return
         if parsed.path == "/eink_signal":
             self.handle_eink_signal(parsed)
             return
@@ -320,19 +339,29 @@ class RequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         LOG.info("%s - %s", self.address_string(), format % args)
 
-    def handle_eink_pull(self, parsed) -> None:
+    def handle_eink_pull(self, parsed, preview: bool = False) -> None:
         token = self.headers.get("X-Access-Token", "")
         if token != self.app.config.device_token:
             self.respond_json(HTTPStatus.FORBIDDEN, {"error": "invalid token"})
             return
         query = parse_qs(parsed.query)
+        if preview and (self.app.raw_delivery is None or first_or_empty(query.get("device_id")) != self.app.config.expected_device_sn):
+            self.respond_json(HTTPStatus.FORBIDDEN, {"error": "Native commute preview is disabled for this device"})
+            return
         try:
-            payload = self.app.build_pull_response(query)
+            payload = self.app.build_commute_response(self.app.display_slot(query)[1]) if preview else self.app.build_pull_response(query)
         except PullServerError as exc:
             next_time = self.app.retry_time_utc()
             if self.app.config.commute_snapshot_path:
                 next_time = min(next_time, self.app.display_slot(query)[1])
             payload = {"status": 204, "message": str(exc), "data": {"next_cron_time": next_time}}
+        if (self.app.raw_delivery is not None and payload.get("data", {}).get("delivery") == "raw-on-wake"
+                and first_or_empty(query.get("device_id")) == self.app.config.expected_device_sn):
+            self.app.raw_delivery.start(self.app.load_commute_snapshot(), payload["data"]["next_cron_time"])
+            # A 204 may put the frame back to sleep before the LAN transfer.
+            # Keep its pull open until raw rendering finishes, below the
+            # documented ~60s native HTTP deadline.
+            self.app.raw_delivery.wait(timeout=50)
         self.respond_json(HTTPStatus.OK, payload)
 
     def handle_eink_signal(self, parsed) -> None:
@@ -426,6 +455,9 @@ def load_config(path: Path) -> Config:
         display_orientation=str(data.get("display_orientation", "landscape")),
         commute_local_time=str(data.get("commute_local_time", "06:00")),
         commute_snapshot_path=Path(data["commute_snapshot_path"]) if data.get("commute_snapshot_path") else None,
+        commute_delivery_mode=str(data.get("commute_delivery_mode", "native-jpeg")),
+        device_base_url=str(data.get("device_base_url", "")),
+        expected_device_sn=str(data.get("expected_device_sn", "")),
     )
 
 
