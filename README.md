@@ -131,6 +131,15 @@ upstream and verifies the next regular local slot. Verify actual wake/request,
 If a test fails before restoration, restore the normal upstream and next wake
 explicitly on the awake device. Never leave a test upstream accidentally armed.
 
+Physical acceptance on firmware 1.8.46: a real snapshot generated at 13:15
+Europe/Ljubljana was tested through explicit sleep, confirmed LAN unreachability,
+native scheduled wake, authenticated preview callback, raw upload and observed
+writing/displaying→ready. The worker completed at 13:17:53, restored the normal
+upstream and read back the next regular wake as 06:00 the following day. This
+verifies the integrated native-wake/raw path, not just a manual upload. Exact
+render time includes wake/network/panel latency; the frame wakes at the configured
+slot and the image appears after that hardware cycle.
+
 ### Data provenance and limitations
 
 - Optional bottom-right rain indicator: one Open-Meteo multi-location request
