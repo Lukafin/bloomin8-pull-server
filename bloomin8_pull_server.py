@@ -36,6 +36,11 @@ class Config:
     latest_json_url: str
     image_base_url: str
     remote_timeout_seconds: int
+    display_orientation: str = "landscape"
+
+    def __post_init__(self) -> None:
+        if self.display_orientation not in {"portrait", "landscape"}:
+            raise ValueError("display_orientation must be portrait or landscape")
 
     @property
     def timezone(self) -> ZoneInfo:
@@ -133,10 +138,15 @@ class PullServer:
     def landscape_storage_dimensions(self) -> tuple[int, int]:
         return max(self.config.device_width, self.config.device_height), min(self.config.device_width, self.config.device_height)
 
+    def output_dimensions(self) -> tuple[int, int]:
+        width, height = self.landscape_storage_dimensions()
+        return (height, width) if self.config.display_orientation == "portrait" else (width, height)
+
     def image_public_url(self, metadata: dict[str, Any]) -> str:
         date_part = str(metadata.get("date") or "unknown")
         person_slug = slugify(str(metadata.get("person") or "unknown"))
-        filename = f"{date_part}-{person_slug}-jpeg420-v1_L.jpg"
+        orientation = "P" if self.config.display_orientation == "portrait" else "L"
+        filename = f"{date_part}-{person_slug}-jpeg420-v1_{orientation}.jpg"
         return f"{self.config.public_base_url}/image/{self.config.image_token}/{filename}"
 
     def build_pull_response(self, request_query: dict[str, list[str]]) -> dict[str, Any]:
@@ -167,12 +177,12 @@ class PullServer:
 
     def build_image_bytes(self) -> tuple[bytes, str]:
         metadata = self.load_latest_metadata()
-        target_width, target_height = self.landscape_storage_dimensions()
+        target_width, target_height = self.output_dimensions()
 
         with tempfile.TemporaryDirectory(prefix="bloomin8-pull-") as temp_dir:
             temp_path = Path(temp_dir)
             source_image = self.latest_image_path(metadata, temp_path)
-            landscape_path = temp_path / "landscape.jpg"
+            fitted_path = temp_path / "landscape.jpg"
             final_path = temp_path / "latest_L.jpg"
 
             scale_and_pad = [
@@ -187,15 +197,15 @@ class PullServer:
                 ),
                 "-q:v",
                 "2",
-                str(landscape_path),
+                str(fitted_path),
             ]
             rotate_for_landscape_mode = [
                 "ffmpeg",
                 "-y",
                 "-i",
-                str(landscape_path),
+                str(fitted_path),
                 "-vf",
-                "transpose=1",
+                "null" if self.config.display_orientation == "portrait" else "transpose=1",
                 "-pix_fmt",
                 "yuvj420p",
                 "-q:v",
@@ -326,6 +336,7 @@ def load_config(path: Path) -> Config:
         latest_json_url=str(data.get("latest_json_url") or "").strip(),
         image_base_url=str(data.get("image_base_url") or "").strip(),
         remote_timeout_seconds=int(data.get("remote_timeout_seconds", 20)),
+        display_orientation=str(data.get("display_orientation", "landscape")),
     )
 
 

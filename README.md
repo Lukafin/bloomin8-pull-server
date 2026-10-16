@@ -57,6 +57,11 @@ cp bloomin8_pull_config.example.json bloomin8_pull_config.json
 ```
 
 Important fields:
+- `display_orientation`: `portrait` for an upright portrait-mounted frame, or
+  `landscape` (backward-compatible default). Portrait fits directly to the
+  portrait screen dimensions without rotation and uses `_P.jpg`; landscape
+  retains pre-rotation and `_L.jpg`. Both preserve the whole source without
+  cropping, padding only where aspect ratios differ.
 - `timezone`
 - `scheduled_local_time`
 - `retry_interval_minutes`

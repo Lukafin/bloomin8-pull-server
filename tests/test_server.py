@@ -155,6 +155,31 @@ class PullServerTests(unittest.TestCase):
         else:
             self.fail("Missing JPEG baseline frame")
 
+    def test_portrait_url_and_dimensions(self):
+        config = self.remote_config()
+        config.display_orientation = "portrait"
+        server = PullServer(config)
+        self.assertEqual(server.output_dimensions(), (1200, 1600))
+        self.assertTrue(server.image_public_url({"date": "2026-10-16", "person": "Bayo"})
+                        .endswith("-jpeg420-v1_P.jpg"))
+
+    def test_portrait_pipeline_does_not_rotate(self):
+        config = self.remote_config()
+        config.display_orientation = "portrait"
+        server = PullServer(config)
+        commands = []
+        def encode(command):
+            commands.append(command)
+            Path(command[-1]).write_bytes(b"test-only-encoded-fixture")
+        with patch.object(server, "load_latest_metadata", return_value={"person": "Fixture"}), \
+             patch.object(server, "latest_image_path", return_value=Path("fixture.png")), \
+             patch("bloomin8_pull_server.run_ffmpeg", side_effect=encode):
+            _, filename = server.build_image_bytes()
+        self.assertIn("scale=1200:1600", commands[0][commands[0].index("-vf") + 1])
+        self.assertEqual(commands[1][commands[1].index("-vf") + 1], "null")
+        self.assertEqual(commands[1][commands[1].index("-pix_fmt") + 1], "yuvj420p")
+        self.assertTrue(filename.endswith("_P.jpg"))
+
     def test_image_filename_cannot_escape_archive_directory(self):
         server = PullServer(self.remote_config())
         with tempfile.TemporaryDirectory() as temp_dir:
