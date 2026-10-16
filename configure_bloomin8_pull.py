@@ -39,16 +39,17 @@ def request(url: str, method: str = 'GET', payload: dict | None = None) -> dict:
 def next_local_slot(cfg: dict, now: datetime | None = None) -> datetime:
     tz = ZoneInfo(cfg['timezone'])
     now = (now or datetime.now(timezone.utc)).astimezone(tz)
-    times = [cfg['scheduled_local_time']]
+    times = [(cfg['scheduled_local_time'], range(7))]
     if cfg.get('commute_snapshot_path'):
-        times.append(cfg.get('commute_local_time', '06:00'))
+        times.append((cfg.get('commute_local_time', '06:00'), cfg.get('commute_weekdays', range(7))))
     slots = []
-    for value in times:
+    for value, weekdays in times:
         hour, minute = map(int, value.split(':'))
-        slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if slot <= now:
-            slot += timedelta(days=1)
-        slots.append(slot)
+        for offset in range(8):
+            slot = (now + timedelta(days=offset)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if slot > now and slot.weekday() in weekdays:
+                slots.append(slot)
+                break
     return min(slots).astimezone(timezone.utc)
 
 

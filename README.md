@@ -54,6 +54,11 @@ commuter snapshot needs Pillow, requests and system DejaVu fonts (on Debian:
 
 Set `commute_snapshot_path` to a private absolute `snapshot.json` path and
 `commute_local_time` to `06:00`; set `scheduled_local_time` to `07:45`.
+Set `commute_weekdays` to `[0, 1, 2, 3, 4]` for Monday–Friday only
+(0=Monday, 6=Sunday; omission preserves the all-days default). Both native
+wake scheduling and content selection skip the commuter edition on excluded
+days, while the infographic remains daily at07:45. Restrict preparation and
+verification cron expressions to weekdays as well.
 Both times are interpreted in the configured `Europe/Ljubljana` timezone,
 including DST. Without a snapshot path the previous single-image mode remains.
 

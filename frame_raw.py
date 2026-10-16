@@ -161,6 +161,8 @@ def check_daily_delivery(config: dict, now=None) -> str:
     from zoneinfo import ZoneInfo
     tz = ZoneInfo(config['timezone'])
     now = now or datetime.now(tz)
+    if now.astimezone(tz).weekday() not in config.get('commute_weekdays', range(7)):
+        return ''
     path = Path(config['commute_snapshot_path'])
     try:
         snapshot = json.loads(path.read_text())

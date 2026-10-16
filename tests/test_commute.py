@@ -47,6 +47,49 @@ class CommuteTests(unittest.TestCase):
         self.assertEqual(self.server().display_slot({'cron_time': ['2099-01-01T00:00:00Z']})[0], 'waiting')
 
     @patch('bloomin8_pull_server.datetime')
+    def test_weekday_only_commute_preserves_weekend_infographic_and_dst(self, clock):
+        clock.fromisoformat.side_effect = datetime.fromisoformat
+        server = self.server()
+        server.config.commute_weekdays = (0, 1, 2, 3, 4)
+        for instant, slot, next_time in [
+            ('2026-10-16T04:00:00+00:00', 'commute', '2026-10-16T05:45:00Z'),
+            ('2026-10-16T12:00:00+00:00', 'infographic', '2026-10-17T05:45:00Z'),
+            ('2026-10-17T04:00:00+00:00', 'waiting', '2026-10-17T05:45:00Z'),
+            ('2026-10-17T05:45:00+00:00', 'infographic', '2026-10-18T05:45:00Z'),
+            ('2026-10-18T05:45:00+00:00', 'infographic', '2026-10-19T04:00:00Z'),
+            ('2026-10-19T04:00:00+00:00', 'commute', '2026-10-19T05:45:00Z'),
+            ('2026-10-24T12:00:00+00:00', 'infographic', '2026-10-25T06:45:00Z'),
+            ('2026-10-25T05:00:00+00:00', 'waiting', '2026-10-25T06:45:00Z'),
+            ('2026-10-25T06:45:00+00:00', 'infographic', '2026-10-26T05:00:00Z')]:
+            clock.now.side_effect = lambda tz=None: datetime.fromisoformat(instant).astimezone(tz)
+            with self.subTest(instant=instant):
+                self.assertEqual(server.display_slot({}), (slot, next_time))
+                cfg = {'timezone': 'Europe/Ljubljana', 'scheduled_local_time': '07:45',
+                       'commute_local_time': '06:00', 'commute_snapshot_path': '/private/snapshot.json',
+                       'commute_weekdays': [0, 1, 2, 3, 4]}
+                self.assertEqual(next_local_slot(cfg, datetime.fromisoformat(instant)).timestamp(),
+                                 datetime.fromisoformat(next_time.replace('Z', '+00:00')).timestamp())
+
+    @patch('bloomin8_pull_server.datetime')
+    def test_weekend_early_wake_does_not_load_or_deliver_commute(self, clock):
+        clock.fromisoformat.side_effect = datetime.fromisoformat
+        clock.now.side_effect = lambda tz=None: datetime.fromisoformat('2026-10-17T04:00:00+00:00').astimezone(tz)
+        server = self.server()
+        server.config.commute_weekdays = (0, 1, 2, 3, 4)
+        with patch.object(server, 'load_commute_snapshot', side_effect=AssertionError('weekend commute forbidden')):
+            response = server.build_pull_response({})
+        self.assertEqual(response['status'], 204)
+        self.assertEqual(response['data']['next_cron_time'], '2026-10-17T05:45:00Z')
+
+    def test_weekend_checker_is_quiet_without_snapshot(self):
+        from frame_raw import check_daily_delivery
+        cfg = {'timezone': 'Europe/Ljubljana', 'commute_snapshot_path': '/does/not/exist',
+               'commute_weekdays': [0, 1, 2, 3, 4]}
+        self.assertEqual(check_daily_delivery(cfg, datetime.fromisoformat('2026-10-17T06:05:00+02:00')), '')
+        self.assertEqual(check_daily_delivery(cfg, datetime.fromisoformat('2026-10-18T06:05:00+02:00')), '')
+        self.assertNotEqual(check_daily_delivery(cfg, datetime.fromisoformat('2026-10-19T06:05:00+02:00')), '')
+
+    @patch('bloomin8_pull_server.datetime')
     def test_missing_commute_returns_retry_not_infographic(self, clock):
         clock.fromisoformat.side_effect = datetime.fromisoformat
         clock.now.side_effect = lambda tz=None: datetime.fromisoformat('2026-10-16T04:00:00+00:00').astimezone(tz)

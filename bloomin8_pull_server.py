@@ -42,8 +42,11 @@ class Config:
     commute_delivery_mode: str = "native-jpeg"
     device_base_url: str = ""
     expected_device_sn: str = ""
+    commute_weekdays: tuple[int, ...] = tuple(range(7))
 
     def __post_init__(self) -> None:
+        if any(type(day) is not int or not 0 <= day <= 6 for day in self.commute_weekdays):
+            raise ValueError("commute_weekdays must contain integers 0=Monday through 6=Sunday")
         if self.display_orientation not in {"portrait", "landscape"}:
             raise ValueError("display_orientation must be portrait or landscape")
         if self.commute_snapshot_path and self.commute_local_time >= self.scheduled_local_time:
@@ -168,7 +171,7 @@ class PullServer:
         if self.config.commute_snapshot_path:
             slot, next_time = self.display_slot(request_query)
             if slot == "waiting":
-                return {"status": 204, "message": "Waiting for morning commute edition",
+                return {"status": 204, "message": "Waiting for next scheduled edition",
                         "data": {"next_cron_time": next_time}}
             if slot == "commute":
                 return self.build_commute_response(next_time)
@@ -225,11 +228,20 @@ class PullServer:
         ih, im = map(int, self.config.scheduled_local_time.split(":"))
         commute = now.replace(hour=ch, minute=cm, second=0, microsecond=0)
         infographic = now.replace(hour=ih, minute=im, second=0, microsecond=0)
-        if now < commute:
+        if now.weekday() not in self.config.commute_weekdays:
+            if now < infographic:
+                return "waiting", utc_string(infographic)
+        elif now < commute:
             return "waiting", utc_string(commute)
-        if now < infographic:
+        elif now < infographic:
             return "commute", utc_string(infographic)
-        return "infographic", utc_string(commute + timedelta(days=1))
+        from configure_bloomin8_pull import next_local_slot
+        next_slot = next_local_slot({'timezone': self.config.timezone_name,
+                                    'scheduled_local_time': self.config.scheduled_local_time,
+                                    'commute_snapshot_path': str(self.config.commute_snapshot_path),
+                                    'commute_local_time': self.config.commute_local_time,
+                                    'commute_weekdays': self.config.commute_weekdays}, now)
+        return "infographic", utc_string(next_slot)
 
     def load_commute_snapshot(self) -> dict[str, Any]:
         try:
@@ -454,6 +466,7 @@ def load_config(path: Path) -> Config:
         remote_timeout_seconds=int(data.get("remote_timeout_seconds", 20)),
         display_orientation=str(data.get("display_orientation", "landscape")),
         commute_local_time=str(data.get("commute_local_time", "06:00")),
+        commute_weekdays=tuple(data.get("commute_weekdays", range(7))),
         commute_snapshot_path=Path(data["commute_snapshot_path"]) if data.get("commute_snapshot_path") else None,
         commute_delivery_mode=str(data.get("commute_delivery_mode", "native-jpeg")),
         device_base_url=str(data.get("device_base_url", "")),
