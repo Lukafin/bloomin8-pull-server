@@ -2,6 +2,7 @@
   "timezone": "Europe/Ljubljana",
   "scheduled_local_time": "07:45",
   "commute_local_time": "06:00",
+  "commute_weekdays": [0, 1, 2, 3, 4],
   "commute_snapshot_path": null,
   "commute_delivery_mode": "native-jpeg",
   "device_base_url": "",
