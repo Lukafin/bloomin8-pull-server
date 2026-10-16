@@ -61,6 +61,7 @@ class SourceTests(unittest.TestCase):
 
     @patch('commute_board.collect_trains', side_effect=ValueError('stale'))
     @patch('commute_board.collect_roads', side_effect=ValueError('bad XML'))
+    @patch('commute_board.collect_weather', side_effect=ValueError('weather unavailable'))
     def test_unavailable_never_means_clear(self, *mocks):
         data = collect()
         self.assertFalse(data['mock'])

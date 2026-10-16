@@ -14,7 +14,7 @@ import unicodedata
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 import requests
@@ -24,6 +24,8 @@ TZ = ZoneInfo('Europe/Ljubljana')
 RAIL_BASE = 'https://api.zamudil.si/api'
 ROAD_URL = 'https://www.promet.si/dc/b2b.dogodki.rss?roadtype=highway&eventtype=all&language=sl_SI'
 NS = {'a': 'http://www.w3.org/2005/Atom'}
+RAIN_THRESHOLD = 30
+WEATHER_PLACES = [('Kranj', 46.2389, 14.3556), ('Ljubljana', 46.0569, 14.5058)]
 
 
 def norm(value):
@@ -179,6 +181,45 @@ def collect_roads(session, now):
             'note': 'Ni ustreznih objavljenih obvestil za A2 Kranj–Ljubljana. To ni meritev pretočnosti.'}
 
 
+def parse_weather(payload, now):
+    """Daily maximum hourly precipitation probability, not daily-total probability."""
+    if not isinstance(payload, list) or len(payload) != len(WEATHER_PLACES):
+        raise ValueError('Expected forecasts for exactly two locations')
+    cities = []
+    day = now.astimezone(TZ).date().isoformat()
+    for row, (name, lat, lon) in zip(payload, WEATHER_PLACES):
+        try:
+            if row.get('timezone') != 'Europe/Ljubljana' or abs(row['latitude'] - lat) > .08 or abs(row['longitude'] - lon) > .08:
+                raise ValueError('Weather location/timezone mismatch')
+            daily = row['daily']
+            if daily['time'] != [day] or row['daily_units']['precipitation_probability_max'] != '%':
+                raise ValueError('Weather date/units mismatch')
+            values = daily['precipitation_probability_max']
+            if not isinstance(values, list) or len(values) != 1:
+                raise ValueError('Weather probability array mismatch')
+            value = values[0]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 100:
+                raise ValueError('Missing/invalid precipitation probability')
+            cities.append({'city': name, 'status': 'ok', 'probability': value})
+        except (ValueError, TypeError, KeyError, AttributeError):
+            cities.append({'city': name, 'status': 'unavailable', 'probability': None})
+    known = [city['probability'] for city in cities if city['status'] == 'ok']
+    maximum = max(known) if known else None
+    complete = len(known) == len(WEATHER_PLACES)
+    rain = True if maximum is not None and maximum >= RAIN_THRESHOLD else (False if complete else None)
+    return {'status': 'ok' if complete else ('partial' if known else 'unavailable'),
+            'rain_possible': rain, 'max_probability': maximum, 'threshold_percent': RAIN_THRESHOLD,
+            'cities': cities, 'forecast_date': day, 'retrieved_at': now.isoformat(),
+            'source': 'Open-Meteo', 'metric': 'precipitation_probability_max'}
+
+
+def collect_weather(session, now):
+    params = {'latitude': ','.join(str(p[1]) for p in WEATHER_PLACES),
+              'longitude': ','.join(str(p[2]) for p in WEATHER_PLACES),
+              'daily': 'precipitation_probability_max', 'timezone': 'Europe/Ljubljana', 'forecast_days': 1}
+    return parse_weather(get(session, 'https://api.open-meteo.com/v1/forecast?' + urlencode(params)).json(), now)
+
+
 def collect(now=None):
     now = now or datetime.now(TZ)
     result = {'generated_at': now.isoformat(), 'mock': False}
@@ -191,6 +232,11 @@ def collect(now=None):
                 result[channel] = {'status': 'unavailable', 'items': [], 'error': f'{type(exc).__name__}: {exc}',
                                    'source': 'zamudil.si (neuradno)' if channel == 'trains' else 'Promet.si / DARS',
                                    'note': 'Vir ni dosegljiv ali podatki niso dovolj sveži. To ne pomeni, da zamud oziroma zastojev ni.'}
+        try:
+            result['weather'] = collect_weather(session, now)
+        except (requests.RequestException, ValueError, TypeError, KeyError, OverflowError) as exc:
+            result['weather'] = {'status': 'unavailable', 'rain_possible': None, 'source': 'Open-Meteo',
+                                 'error': f'{type(exc).__name__}: {exc}'}
     return result
 
 
@@ -240,7 +286,7 @@ def main():
     target = Path(config['commute_snapshot_path'])
     data = collect()
     publish(data, target)
-    problems = [key for key in ['trains', 'roads'] if data[key]['status'] != 'ok']
+    problems = [key for key in ['trains', 'roads', 'weather'] if data[key]['status'] != 'ok']
     if problems:
         print('Prometni okvir: slika je pripravljena, vendar vir ni na voljo: ' + ', '.join(problems) + '. Na sliki je opozorilo, ne trditev o tekočem prometu.')
     return 0
