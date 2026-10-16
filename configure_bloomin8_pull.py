@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -8,6 +9,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = Path(os.environ.get('BLOOMIN8_PULL_CONFIG', SCRIPT_DIR / 'bloomin8_pull_config.json'))
@@ -34,9 +36,32 @@ def request(url: str, method: str = 'GET', payload: dict | None = None) -> dict:
         return {'raw': raw}
 
 
+def next_local_slot(cfg: dict, now: datetime | None = None) -> datetime:
+    tz = ZoneInfo(cfg['timezone'])
+    now = (now or datetime.now(timezone.utc)).astimezone(tz)
+    times = [cfg['scheduled_local_time']]
+    if cfg.get('commute_snapshot_path'):
+        times.append(cfg.get('commute_local_time', '06:00'))
+    slots = []
+    for value in times:
+        hour, minute = map(int, value.split(':'))
+        slot = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if slot <= now:
+            slot += timedelta(days=1)
+        slots.append(slot)
+    return min(slots).astimezone(timezone.utc)
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--arm-next', action='store_true', help='Arm next configured local slot instead of a 3-minute test')
+    parser.add_argument('--ip', default=DEVICE_IP)
+    parser.add_argument('--expected-sn', help='Verify exact frame identity before changing its schedule')
+    args = parser.parse_args()
     cfg = load_config()
-    cron_time = (datetime.now(timezone.utc) + timedelta(minutes=3)).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    base_url = f'http://{args.ip}'
+    when = next_local_slot(cfg) if args.arm_next else datetime.now(timezone.utc) + timedelta(minutes=3)
+    cron_time = when.replace(microsecond=0).isoformat().replace('+00:00', 'Z')
     payload = {
         'upstream_on': True,
         'upstream_url': cfg['public_base_url'],
@@ -45,18 +70,26 @@ def main() -> int:
     }
 
     try:
-        put_result = request(f'{BASE_URL}/upstream/pull_settings', method='PUT', payload=payload)
-        get_result = request(f'{BASE_URL}/upstream/pull_settings', method='GET')
-    except urllib.error.URLError as exc:
-        print(json.dumps({'status': 'error', 'error': str(exc), 'device_ip': DEVICE_IP}, ensure_ascii=False))
+        info = request(f'{base_url}/deviceInfo')
+        expected = args.expected_sn or cfg.get('expected_device_sn')
+        if not expected or info.get('sn') != expected:
+            raise ValueError('Set --expected-sn or config expected_device_sn; device identity must match before a write')
+        request(f'{base_url}/upstream/pull_settings', method='PUT', payload=payload)
+        get_result = request(f'{base_url}/upstream/pull_settings', method='GET')
+        if not (get_result.get('upstream_on') is True
+                and get_result.get('upstream_url') == cfg['public_base_url']
+                and get_result.get('next_cron_time') == int(when.timestamp())):
+            raise ValueError('Device schedule read-back mismatch')
+    except (urllib.error.URLError, ValueError) as exc:
+        print(json.dumps({'status': 'error', 'error': str(exc)}, ensure_ascii=False))
         return 1
 
     print(json.dumps({
         'status': 'ok',
-        'device_ip': DEVICE_IP,
-        'payload': payload,
-        'put_result': put_result,
-        'get_result': get_result,
+        'cron_time': cron_time,
+        'local_time': when.astimezone(ZoneInfo(cfg['timezone'])).isoformat(),
+        'identity_verified': True,
+        'schedule_readback_verified': True,
     }, ensure_ascii=False, indent=2))
     return 0
 

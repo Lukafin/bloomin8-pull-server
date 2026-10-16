@@ -1,6 +1,8 @@
 {
   "timezone": "Europe/Ljubljana",
-  "scheduled_local_time": "07:30",
+  "scheduled_local_time": "07:45",
+  "commute_local_time": "06:00",
+  "commute_snapshot_path": null,
   "retry_interval_minutes": 15,
   "public_base_url": "https://your-host.ts.net/bloomin8-pull",
   "device_token": "replace-with-random-secret",
