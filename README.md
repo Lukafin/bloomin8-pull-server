@@ -101,8 +101,10 @@ to the verified exact frame serial. The HTTP server needs Pillow and requests in
 this mode. The infographic lane and its JPEG preparation remain unchanged.
 
 On the authenticated commuter pull, the server replies **HTTP 200**, with JSON
-`status: 204` and the next 07:45 wake; an asynchronous worker delivers documented
-3-bit monochrome pixel data while the device is already awake. It never polls or
+`status: 204` and the next 07:45 wake **after** waiting up to 50 seconds for its
+worker to finish the documented 3-bit monochrome pixel delivery. Sending that
+response first can let the frame sleep during upload; a real test exposed that
+race. The bounded worker operates while the device is already awake. It never polls or
 pushes to a sleeping frame overnight. It verifies serial, exact dimensions, the
 complete pixel-packing round-trip, raw-upload path, an observed status 3→100
 transition, and the next native wake read-back. This is not claiming the vendor

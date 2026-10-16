@@ -205,7 +205,7 @@ class PullServer:
             retry = min(retry, datetime.fromisoformat(next_time.replace("Z", "+00:00")))
             return {"status": 204, "message": str(exc), "data": {"next_cron_time": utc_string(retry)}}
         if self.raw_delivery is not None:
-            return {"status": 204, "message": "Commute pixels delivered on the authenticated native wake",
+            return {"status": 204, "message": "Commute pixel delivery uses the authenticated native wake",
                     "data": {"next_cron_time": next_time, "delivery": "raw-on-wake"}}
         return {"status": 200, "type": "SHOW", "message": "Morning commute snapshot",
                 "data": {"next_cron_time": next_time,
@@ -355,11 +355,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             if self.app.config.commute_snapshot_path:
                 next_time = min(next_time, self.app.display_slot(query)[1])
             payload = {"status": 204, "message": str(exc), "data": {"next_cron_time": next_time}}
-        self.respond_json(HTTPStatus.OK, payload)
-        self.wfile.flush()
         if (self.app.raw_delivery is not None and payload.get("data", {}).get("delivery") == "raw-on-wake"
                 and first_or_empty(query.get("device_id")) == self.app.config.expected_device_sn):
             self.app.raw_delivery.start(self.app.load_commute_snapshot(), payload["data"]["next_cron_time"])
+            # A 204 may put the frame back to sleep before the LAN transfer.
+            # Keep its pull open until raw rendering finishes, below the
+            # documented ~60s native HTTP deadline.
+            self.app.raw_delivery.wait(timeout=50)
+        self.respond_json(HTTPStatus.OK, payload)
 
     def handle_eink_signal(self, parsed) -> None:
         query = parse_qs(parsed.query)

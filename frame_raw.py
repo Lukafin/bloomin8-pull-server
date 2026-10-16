@@ -36,7 +36,7 @@ def pack_monochrome(path: Path, dimensions: tuple[int, int]) -> bytes:
 
 def deliver_raw(image: Path, base_url: str, expected_serial: str, upstream_url: str,
                 token: str, next_cron_time: str, *, session=None,
-                sleep=time.sleep, timeout: float = 90) -> dict:
+                sleep=time.sleep, timeout: float = 40) -> dict:
     """One upload, observed writing/displaying→ready, and exact wake read-back."""
     own_session = session is None
     session = session or requests.Session()
@@ -102,6 +102,8 @@ class RawWakeDelivery:
     def __init__(self, config):
         self.config = config
         self.lock = threading.Lock()
+        self.finished = threading.Event()
+        self.finished.set()
 
     @property
     def receipt_path(self):
@@ -123,12 +125,17 @@ class RawWakeDelivery:
             from commute_board import atomic_json
             atomic_json(self.receipt_path, {'status': 'running', 'snapshot_filename': snapshot['image_filename'],
                                           'started_at': datetime.now(timezone.utc).isoformat()})
+            self.finished.clear()
             threading.Thread(target=self._run, args=(snapshot, next_cron_time), daemon=True,
                              name='commute-raw-wake').start()
             return True
         except Exception:
+            self.finished.set()
             self.lock.release()
             raise
+
+    def wait(self, timeout=50):
+        return self.finished.wait(timeout)
 
     def _run(self, snapshot, next_cron_time):
         from commute_board import atomic_json
@@ -145,6 +152,7 @@ class RawWakeDelivery:
             try:
                 atomic_json(self.receipt_path, dict(result, snapshot_filename=snapshot['image_filename']))
             finally:
+                self.finished.set()
                 self.lock.release()
 
 

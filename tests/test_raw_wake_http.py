@@ -44,6 +44,7 @@ class RawWakeHttpTests(unittest.TestCase):
                         if 'probe' not in path:
                             self.assertTrue(triggered.wait(timeout=1))
                         self.assertEqual(app.raw_delivery.start.call_count, 0 if 'probe' in path else 1)
+                        self.assertEqual(app.raw_delivery.wait.call_count, 0 if 'probe' in path else 1)
                     for path, headers in [('/eink_pull?device_id=test-frame', {}),
                                           ('/commute-preview/eink_pull?device_id=other', {'X-Access-Token': 'device-secret'})]:
                         with self.assertRaises(HTTPError) as denied:
