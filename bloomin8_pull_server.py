@@ -122,8 +122,12 @@ class PullServer:
         next_time = datetime.now(timezone.utc) + timedelta(minutes=self.config.retry_interval_minutes)
         return next_time.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-    def next_scheduled_utc(self) -> str:
+    def next_scheduled_utc(self, completed_date: str | None = None) -> str:
         next_local = self.scheduled_time_local()
+        # A ready image consumes its local calendar day, even when the frame's
+        # clock wakes it before our scheduled instant. Never re-arm that day.
+        if completed_date is not None and next_local.date().isoformat() == completed_date:
+            next_local += timedelta(days=1)
         return next_local.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     def landscape_storage_dimensions(self) -> tuple[int, int]:
@@ -132,7 +136,7 @@ class PullServer:
     def image_public_url(self, metadata: dict[str, Any]) -> str:
         date_part = str(metadata.get("date") or "unknown")
         person_slug = slugify(str(metadata.get("person") or "unknown"))
-        filename = f"{date_part}-{person_slug}_L.jpg"
+        filename = f"{date_part}-{person_slug}-jpeg420-v1_L.jpg"
         return f"{self.config.public_base_url}/image/{self.config.image_token}/{filename}"
 
     def build_pull_response(self, request_query: dict[str, list[str]]) -> dict[str, Any]:
@@ -148,7 +152,7 @@ class PullServer:
                 "type": "SHOW",
                 "message": "Latest daily image available",
                 "data": {
-                    "next_cron_time": self.next_scheduled_utc(),
+                    "next_cron_time": self.next_scheduled_utc(completed_date=latest_date),
                     "image_url": self.image_public_url(metadata),
                 },
             }
@@ -192,6 +196,8 @@ class PullServer:
                 str(landscape_path),
                 "-vf",
                 "transpose=1",
+                "-pix_fmt",
+                "yuvj420p",
                 "-q:v",
                 "2",
                 str(final_path),
@@ -201,7 +207,7 @@ class PullServer:
             run_ffmpeg(rotate_for_landscape_mode)
             data = final_path.read_bytes()
 
-        filename = f"{metadata.get('date', 'unknown')}-{slugify(str(metadata.get('person') or 'unknown'))}_L.jpg"
+        filename = self.image_public_url(metadata).rsplit("/", 1)[-1]
         return data, filename
 
 

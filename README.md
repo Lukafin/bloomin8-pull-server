@@ -158,7 +158,28 @@ For native pull mode, the vendor docs require:
 - for landscape mode, serve `_L.jpg`
 - the file itself should be stored rotated for the device’s landscape handling
 
-This server prepares that dynamically from the source archive image.
+This server prepares that dynamically from the source archive image. Output is
+baseline JPEG with explicit `yuvj420p` (4:2:0) sampling. Filenames contain
+`-jpeg420-v1` so a frame that cached a failed older encoding performs a new decode.
+This is a compatibility workaround to validate on the physical frame, not a
+vendor-documented 4:2:0 requirement.
+
+Once today's image is available, the response schedules the next local calendar
+day's configured wake time—even if a fast device clock wakes the frame before
+today's server-side scheduled instant. Stale-image responses retain the retry
+interval. Local daily wake time is preserved across daylight-saving changes.
+
+Run regressions (including an actual FFmpeg JPEG sampling check):
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+For device-side verification use GET `/log/list` and
+`/log/YYYY-MM-DD.log`. A successful download or `success=1` feedback alone does
+not prove a screen refresh: firmware can mark a failed current image as already
+displaying on a subsequent pull. Confirm no `Image parsing failed`, no shortcut
+`Currently displaying, mark directly`, and ask the viewer to confirm the panel.
 
 ## Security notes
 
