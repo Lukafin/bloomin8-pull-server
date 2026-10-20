@@ -8,7 +8,7 @@ import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as wall_time
 from email.utils import formatdate
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,8 +43,18 @@ class Config:
     device_base_url: str = ""
     expected_device_sn: str = ""
     commute_weekdays: tuple[int, ...] = tuple(range(7))
+    commute_local_times: tuple[str, ...] = ()
+    archive_rotation_path: Path | None = None
 
     def __post_init__(self) -> None:
+        times = self.commute_local_times or (self.commute_local_time,)
+        for value in (*times, self.scheduled_local_time):
+            if wall_time.fromisoformat(value).strftime('%H:%M') != value:
+                raise ValueError('Slot times must use HH:MM')
+        if len(set(times)) != len(times) or list(times) != sorted(times):
+            raise ValueError('Commute slots must be unique and sorted')
+        if self.commute_snapshot_path and max(times) >= self.scheduled_local_time:
+            raise ValueError('All commute slots must precede infographic time')
         if any(type(day) is not int or not 0 <= day <= 6 for day in self.commute_weekdays):
             raise ValueError("commute_weekdays must contain integers 0=Monday through 6=Sunday")
         if self.display_orientation not in {"portrait", "landscape"}:
@@ -74,6 +84,12 @@ class PullServer:
             self.raw_delivery = RawWakeDelivery(config)
 
     def load_latest_metadata(self) -> dict[str, Any]:
+        if self.config.archive_rotation_path:
+            from archive_rotation import load_selection
+            try:
+                return load_selection(self.config.archive_rotation_path, datetime.now(self.config.timezone).date())
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise PullServerError(f'Archive rotation unavailable: {exc}') from exc
         if self.config.latest_json_url:
             separator = "&" if "?" in self.config.latest_json_url else "?"
             url = f"{self.config.latest_json_url}{separator}v={int(datetime.now(timezone.utc).timestamp())}"
@@ -107,6 +123,12 @@ class PullServer:
         image_filename = str(image_filename)
         if Path(image_filename).name != image_filename:
             raise PullServerError("latest.json image_filename must be a basename")
+
+        if self.config.archive_rotation_path:
+            image_path = self.config.archive_rotation_path.parent / 'images' / image_filename
+            if not image_path.is_file():
+                raise PullServerError('Reviewed archive image is missing from the private cache')
+            return image_path
 
         if self.config.latest_json_url:
             image_base_url = self.config.image_base_url or urljoin(self.config.latest_json_url, ".")
@@ -162,6 +184,8 @@ class PullServer:
 
     def image_public_url(self, metadata: dict[str, Any]) -> str:
         date_part = str(metadata.get("date") or "unknown")
+        if metadata.get('display_date'):
+            date_part = f"{metadata['display_date']}-archive-{date_part}"
         person_slug = slugify(str(metadata.get("person") or "unknown"))
         orientation = "P" if self.config.display_orientation == "portrait" else "L"
         filename = f"{date_part}-{person_slug}-jpeg420-v1_{orientation}.jpg"
@@ -176,7 +200,7 @@ class PullServer:
             if slot == "commute":
                 return self.build_commute_response(next_time)
         metadata = self.load_latest_metadata()
-        latest_date = str(metadata.get("date") or "")
+        latest_date = str(metadata.get("display_date") or metadata.get("date") or "")
         today_local = self.todays_local_date()
         requested_cron_time = first_or_empty(request_query.get("cron_time"))
         LOG.info("eink_pull requested: latest_date=%s today_local=%s cron_time=%s", latest_date, today_local, requested_cron_time)
@@ -224,22 +248,24 @@ class PullServer:
                 now = max(now, wake.astimezone(self.config.timezone))
         except (ValueError, TypeError):
             pass
-        ch, cm = map(int, self.config.commute_local_time.split(":"))
         ih, im = map(int, self.config.scheduled_local_time.split(":"))
-        commute = now.replace(hour=ch, minute=cm, second=0, microsecond=0)
+        times = self.config.commute_local_times or (self.config.commute_local_time,)
+        commutes = [now.replace(hour=int(value[:2]), minute=int(value[3:]), second=0, microsecond=0) for value in times]
         infographic = now.replace(hour=ih, minute=im, second=0, microsecond=0)
         if now.weekday() not in self.config.commute_weekdays:
             if now < infographic:
                 return "waiting", utc_string(infographic)
-        elif now < commute:
-            return "waiting", utc_string(commute)
+        elif now < commutes[0]:
+            return "waiting", utc_string(commutes[0])
         elif now < infographic:
-            return "commute", utc_string(infographic)
+            following = next((slot for slot in commutes if slot > now), infographic)
+            return "commute", utc_string(following)
         from configure_bloomin8_pull import next_local_slot
         next_slot = next_local_slot({'timezone': self.config.timezone_name,
                                     'scheduled_local_time': self.config.scheduled_local_time,
                                     'commute_snapshot_path': str(self.config.commute_snapshot_path),
                                     'commute_local_time': self.config.commute_local_time,
+                                    'commute_local_times': times,
                                     'commute_weekdays': self.config.commute_weekdays}, now)
         return "infographic", utc_string(next_slot)
 
@@ -256,6 +282,8 @@ class PullServer:
             now = datetime.now(self.config.timezone)
             if generated.astimezone(self.config.timezone).date() != now.date() or generated > now + timedelta(minutes=5):
                 raise ValueError("Today's commute snapshot is not ready")
+            if len(self.config.commute_local_times) > 1 and (now - generated).total_seconds() > 15 * 60:
+                raise ValueError('Fresh snapshot for this commute edition is not ready')
             name = snapshot["image_filename"]
             if not isinstance(name, str) or Path(name).name != name or not name.startswith("commute-") or not name.endswith("_P.jpg"):
                 raise ValueError("Invalid commute image filename")
@@ -467,6 +495,8 @@ def load_config(path: Path) -> Config:
         display_orientation=str(data.get("display_orientation", "landscape")),
         commute_local_time=str(data.get("commute_local_time", "06:00")),
         commute_weekdays=tuple(data.get("commute_weekdays", range(7))),
+        commute_local_times=tuple(data.get('commute_local_times', ())),
+        archive_rotation_path=Path(data['archive_rotation_path']) if data.get('archive_rotation_path') else None,
         commute_snapshot_path=Path(data["commute_snapshot_path"]) if data.get("commute_snapshot_path") else None,
         commute_delivery_mode=str(data.get("commute_delivery_mode", "native-jpeg")),
         device_base_url=str(data.get("device_base_url", "")),

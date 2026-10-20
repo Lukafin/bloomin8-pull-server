@@ -52,6 +52,45 @@ commuter snapshot needs Pillow, requests and system DejaVu fonts (on Debian:
 
 ## Optional morning commuter edition
 
+### Three commuter editions and reviewed archive rotation
+
+The live multi-edition configuration uses `commute_local_times`:
+`["06:00", "06:30", "07:00"]`, Monday–Friday, and
+`scheduled_local_time: "08:00"` daily, all in `Europe/Ljubljana`.
+Omitting the array retains the older single `commute_local_time` behavior
+described below. All commuter times must be sorted, distinct and before the
+infographic. The native wake response advances through **every** remaining
+slot, including weekend and DST transitions. Multi-edition snapshots older
+than 15 minutes are rejected instead of redisplaying the first edition.
+
+Prepare at 05:55, 06:25 and 06:55 Ljubljana, then verify the exact-snapshot
+receipt at 06:05, 06:35 and 07:05. On a Europe/London scheduler this is two
+preparation jobs (`55 4,5 * * 1-5` and `25 5 * * 1-5`) and two verification
+jobs (`5 5,6 * * 1-5` and `35 5 * * 1-5`). Success stays silent.
+
+Set `archive_rotation_path` to a private frozen playlist JSON containing
+`anchor_date`, ordered `filenames` and the corresponding archive `entries`.
+Keep verified original images in the sibling `images/` directory. The playlist
+must contain at least two older Slovenian entries with `age_6` suitability.
+Visually review actual images: metadata can be wrong about language and a
+landscape image can be illegible on a portrait frame. Selection is stable
+throughout each local calendar day, rotates without repetition until the list
+cycles, and **never** falls back to a newly generated `latest.json` image.
+The original source date remains provenance; `display_date` identifies the
+current edition. The public archive and generation jobs are not changed.
+
+`rail_notices.py` reads official SŽ search RSS feeds for Kranj, Jesenice and
+Vižmarje. It deduplicates route-relevant replacement-bus notices, parses explicit
+validity ranges/day lists and keeps publication years (old search results are
+not today's restrictions). Complex dates remain unverified, not assumed active.
+The bus strip shows the route, validity and qualification "za navedene vlake";
+these feeds are **not a complete per-train replacement timetable**. Failure or
+no matched notices is explicitly not evidence of no replacement buses. Rail
+delay predictions still come separately from unofficial zamudil.si.
+Two train alerts fit alongside the bus strip; overflow is counted.
+
+The following describes the backwards-compatible single-commute defaults:
+
 Set `commute_snapshot_path` to a private absolute `snapshot.json` path and
 `commute_local_time` to `06:00`; set `scheduled_local_time` to `07:45`.
 Set `commute_weekdays` to `[0, 1, 2, 3, 4]` for Monday–Friday only
@@ -64,14 +103,14 @@ including DST. Without a snapshot path the previous single-image mode remains.
 
 ```mermaid
 flowchart LR
-  Cron[05:55 Ljubljana: prepare snapshot] --> Sources[zamudil.si + official DARS Atom]
+  Cron[05:55 / 06:25 / 06:55 Ljubljana] --> Sources[zamudil.si + DARS + official SZ RSS]
   Sources --> Pillow[Pillow: 1200x1600 baseline 4:2:0 JPEG]
   Pillow --> Cache[Private atomic snapshot]
-  Frame[Frame native pull at 06:00] --> Cache
+  Frame[Frame native pull at 06:00 / 06:30 / 07:00] --> Cache
   Cache --> Delivery[Native JPEG or raw-on-wake LAN worker]
   Delivery --> Proof[Observed writing/displaying then ready]
-  Proof --> Next[Next wake: infographic at 07:45]
-  Next --> Tomorrow[Next wake: commute tomorrow at 06:00]
+  Proof --> Next[Next wake: next commute or archive at 08:00]
+  Next --> Tomorrow[Next day: weekday commute or weekend archive]
 ```
 
 Prepare a live snapshot:

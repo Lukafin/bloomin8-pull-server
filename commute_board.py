@@ -237,6 +237,8 @@ def collect(now=None):
         except (requests.RequestException, ValueError, TypeError, KeyError, OverflowError) as exc:
             result['weather'] = {'status': 'unavailable', 'rain_possible': None, 'source': 'Open-Meteo',
                                  'error': f'{type(exc).__name__}: {exc}'}
+        from rail_notices import collect_notices
+        result['rail_notices'] = collect_notices(session, now)
     return result
 
 
@@ -287,6 +289,8 @@ def main():
     data = collect()
     publish(data, target)
     problems = [key for key in ['trains', 'roads', 'weather'] if data[key]['status'] != 'ok']
+    if data.get('rail_notices', {}).get('status') != 'ok':
+        problems.append('obvestila SŽ o nadomestnih avtobusih')
     if problems:
         print('Prometni okvir: slika je pripravljena, vendar vir ni na voljo: ' + ', '.join(problems) + '. Na sliki je opozorilo, ne trditev o tekočem prometu.')
     return 0

@@ -41,7 +41,8 @@ def next_local_slot(cfg: dict, now: datetime | None = None) -> datetime:
     now = (now or datetime.now(timezone.utc)).astimezone(tz)
     times = [(cfg['scheduled_local_time'], range(7))]
     if cfg.get('commute_snapshot_path'):
-        times.append((cfg.get('commute_local_time', '06:00'), cfg.get('commute_weekdays', range(7))))
+        for value in cfg.get('commute_local_times') or [cfg.get('commute_local_time', '06:00')]:
+            times.append((value, cfg.get('commute_weekdays', range(7))))
     slots = []
     for value, weekdays in times:
         hour, minute = map(int, value.split(':'))
