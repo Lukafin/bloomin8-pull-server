@@ -169,6 +169,10 @@ def check_daily_delivery(config: dict, now=None) -> str:
         receipt = json.loads((path.parent / 'delivery.json').read_text())
         if snapshot.get('mock') is not False or datetime.fromisoformat(snapshot['generated_at']).astimezone(tz).date() != now.astimezone(tz).date():
             raise ValueError('Missing current live snapshot')
+        if len(config.get('commute_local_times', [])) > 1:
+            generated = datetime.fromisoformat(snapshot['generated_at'])
+            if not -300 <= (now - generated).total_seconds() <= 15 * 60:
+                raise ValueError('Snapshot is stale for the current edition')
         if receipt.get('status') != 'ok' or receipt.get('snapshot_filename') != snapshot['image_filename']:
             raise ValueError('No verified delivery receipt for the current snapshot')
         if datetime.fromisoformat(receipt['finished_at']).astimezone(tz).date() != now.astimezone(tz).date():
@@ -176,7 +180,7 @@ def check_daily_delivery(config: dict, now=None) -> str:
         if not receipt.get('active_to_ready_verified') or not receipt.get('next_wake_verified'):
             raise ValueError('Display or next wake is not verified')
     except (OSError, ValueError, KeyError, TypeError):
-        return 'Prometni okvir: današnji prikaz ob 06.00 ni potrjen. Preveri prebujanje okvirja in delivery.json; tišina ne pomeni uspešnega prikaza.'
+        return 'Prometni okvir: zadnja jutranja izdaja ni potrjena. Preveri prebujanje okvirja in delivery.json; tišina ne pomeni uspešnega prikaza.'
     return ''
 
 

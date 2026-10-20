@@ -74,6 +74,8 @@ def render_board(data: dict, destination: Path) -> Path:
     d.text((left, 462), '01', font=font(29, 'mono'), fill=INK)
     d.text((142, 449), 'Z vlakom', font=font(53, bold=True), fill=INK)
     items = trains.get('items', [])
+    notices = data.get('rail_notices')
+    limit = 2 if notices is not None else 3
     if trains.get('status') != 'ok':
         d.text((left, 537), 'PODATKI NISO NA VOLJO', font=font(39, bold=True), fill=INK)
         paragraph(d, trains.get('note') or 'Zamud trenutno ni mogoče preveriti.', (left, 602), 1065, 32, 3)
@@ -84,7 +86,7 @@ def render_board(data: dict, destination: Path) -> Path:
         d.text((left, 531), 'VLAK / ODHOD IZ KRANJA', font=font(25, bold=True), fill=INK)
         d.text((850, 531), 'ZAMUDA', font=font(25, bold=True), fill=INK)
         y = 581
-        for item in items[:3]:
+        for item in items[:limit]:
             label = str(item.get('train') or 'Vlak')
             departure = str(item.get('departure') or 'čas ni potrjen')
             paragraph(d, label, (left, y), 690, 36, 1, bold=True)
@@ -95,10 +97,26 @@ def render_board(data: dict, destination: Path) -> Path:
             d.text((right - d.textlength(delay_text, font=face), y + 7), delay_text, font=face, fill=INK)
             d.line((left, y + 99, right, y + 99), fill=INK, width=1)
             y += 112
-        if len(items) > 3:
-            d.text((left, 930), f'Še {len(items)-3} objavljenih zamud · glej zamudil.si', font=font(26), fill=INK)
+        note_y = 810 if notices is not None else 930
+        if len(items) > limit:
+            d.text((left, note_y), f'Še {len(items)-limit} objavljenih zamud · glej zamudil.si', font=font(26), fill=INK)
         elif trains.get('note'):
-            paragraph(d, trains['note'], (left, 930), 1065, 25, 1)
+            paragraph(d, trains['note'], (left, note_y), 1065, 25, 1)
+    if notices is not None:
+        d.line((left, 850, right, 850), fill=INK, width=2)
+        bus_items = notices.get('items', [])
+        if bus_items:
+            item = bus_items[0]
+            label = 'NADOMESTNI AVTOBUSI · SŽ' if item.get('validity_status') == 'active' else 'AVTOBUSI · VELJAVNOST NI POTRJENA'
+            d.text((left, 861), label, font=font(26, bold=True), fill=INK)
+            paragraph(d, item.get('route', ''), (left, 899), 1065, 26, 1)
+            extra = f" · še {len(bus_items)-1} obvestil" if len(bus_items) > 1 else ''
+            paragraph(d, item.get('validity', '') + extra + ' · za navedene vlake, glej SŽ', (left, 939), 1065, 22, 1)
+        else:
+            d.text((left, 861), 'NADOMESTNI AVTOBUSI · PREVERI SŽ', font=font(26, bold=True), fill=INK)
+            message = 'Vir SŽ ni dosegljiv; avtobusov ni mogoče preveriti.' if notices.get('status') == 'unavailable' else 'V preverjenih obvestilih ni potrditve za danes.'
+            paragraph(d, message, (left, 899), 1065, 25, 1)
+            d.text((left, 939), 'To ne pomeni, da nadomestnih prevozov ni.', font=font(22), fill=INK)
     d.line((left, 979, right, 979), fill=INK, width=5)
     d.text((left, 1007), '02', font=font(29, 'mono'), fill=INK)
     d.text((142, 993), 'Po avtocesti A2', font=font(49, bold=True), fill=INK)
@@ -119,7 +137,7 @@ def render_board(data: dict, destination: Path) -> Path:
         if len(road_items) > 2:
             d.text((left, 1414), f'Še {len(road_items)-2} obvestil · glej promet.si', font=font(25), fill=INK)
     d.line((left, 1460, right, 1460), fill=INK, width=2)
-    sources = 'DEMO / brez živih virov' if is_mock else 'zamudil.si (neuradno) · Promet.si / DARS'
+    sources = 'DEMO / brez živih virov' if is_mock else 'zamudil.si (neuradno) · DARS' + (' · SŽ' if notices is not None else '')
     d.text((left, 1481), 'VIRA  ' + sources, font=font(25), fill=INK)
     d.text((left, 1523), 'Jutranji posnetek. Pred odhodom preveri aktualno stanje.', font=font(24), fill=INK)
     weather = data.get('weather', {})

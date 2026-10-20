@@ -59,6 +59,7 @@ class SourceTests(unittest.TestCase):
         result = collect_trains(Mock(), now)
         self.assertEqual(result['items'][0]['delay_minutes'], 2)
 
+    @patch('rail_notices.collect_notices', return_value={'status': 'unavailable', 'items': []})
     @patch('commute_board.collect_trains', side_effect=ValueError('stale'))
     @patch('commute_board.collect_roads', side_effect=ValueError('bad XML'))
     @patch('commute_board.collect_weather', side_effect=ValueError('weather unavailable'))
