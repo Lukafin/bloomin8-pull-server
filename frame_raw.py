@@ -5,11 +5,12 @@ import json
 import logging
 import threading
 import time
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
-from PIL import Image
+from PIL import Image, ImageOps
 
 LOG = logging.getLogger(__name__)
 
@@ -34,9 +35,34 @@ def pack_monochrome(path: Path, dimensions: tuple[int, int]) -> bytes:
     return bytes(packed)
 
 
+def pack_color(path: Path, dimensions: tuple[int, int]) -> bytes:
+    """Vendor six-color indices, MSB-first 3 bits/pixel, full round-trip proof."""
+    colors = [(0, 0, 0), (255, 255, 255), (255, 0, 0),
+              (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+    palette = Image.new('P', (1, 1))
+    palette.putpalette([channel for color in colors for channel in color] + [0] * (768 - 18))
+    with Image.open(path) as image:
+        if image.size != dimensions or image.width * image.height % 8:
+            raise ValueError('Raw image dimensions must exactly match the physical screen')
+        pixels = image.convert('RGB').quantize(palette=palette, dither=Image.Dither.FLOYDSTEINBERG).tobytes()
+    # Pillow may select a duplicate black palette entry above index 5.
+    pixels = bytes(index if index < 6 else 0 for index in pixels)
+    packed = bytearray()
+    for offset in range(0, len(pixels), 8):
+        word = 0
+        for index in pixels[offset:offset + 8]:
+            word = (word << 3) | index
+        packed.extend(word.to_bytes(3, 'big'))
+    for offset in range(0, len(packed), 3):
+        word = int.from_bytes(packed[offset:offset + 3], 'big')
+        if bytes((word >> shift) & 7 for shift in range(21, -1, -3)) != pixels[(offset // 3) * 8:(offset // 3) * 8 + 8]:
+            raise ValueError('Color pixel packing round-trip failed')
+    return bytes(packed)
+
+
 def deliver_raw(image: Path, base_url: str, expected_serial: str, upstream_url: str,
                 token: str, next_cron_time: str, *, session=None,
-                sleep=time.sleep, timeout: float = 40) -> dict:
+                sleep=time.sleep, timeout: float = 40, packer=pack_monochrome) -> dict:
     """One upload, observed writing/displaying→ready, and exact wake read-back."""
     own_session = session is None
     session = session or requests.Session()
@@ -54,7 +80,7 @@ def deliver_raw(image: Path, base_url: str, expected_serial: str, upstream_url: 
         # Native wake supplies a short LAN window; keep it awake during delivery.
         get('/whistle')
         dimensions = (int(info['width']), int(info['height']))
-        packed = pack_monochrome(image, dimensions)
+        packed = packer(image, dimensions)
         filename = image.stem + '.bin'
         response = session.post(base_url + '/image/dataUpload', params={'filename': filename},
                                 files={'dithered_image': (filename, packed, 'application/octet-stream')},
@@ -136,6 +162,74 @@ class RawWakeDelivery:
 
     def wait(self, timeout=50):
         return self.finished.wait(timeout)
+
+    @property
+    def infographic_receipt_path(self):
+        return self.config.commute_snapshot_path.parent / 'infographic-delivery.json'
+
+    def infographic_verified(self, metadata, app):
+        try:
+            receipt = json.loads(self.infographic_receipt_path.read_text())
+        except (OSError, ValueError):
+            return False
+        return (receipt.get('status') == 'ok'
+                and receipt.get('snapshot_filename') == app.image_public_url(metadata).rsplit('/', 1)[-1]
+                and receipt.get('source_filename') == metadata.get('image_filename')
+                and receipt.get('display_date') == str(metadata.get('display_date') or metadata.get('date'))
+                and receipt.get('active_to_ready_verified') is True
+                and receipt.get('next_wake_verified') is True)
+
+    def start_infographic(self, metadata, next_cron_time, app):
+        """Share the frame lock, but never overwrite the commuter receipt."""
+        if not self.lock.acquire(blocking=False):
+            return False
+        try:
+            if self.infographic_verified(metadata, app):
+                self.lock.release()
+                return False
+            from commute_board import atomic_json
+            atomic_json(self.infographic_receipt_path, {
+                'status': 'running', 'snapshot_filename': app.image_public_url(metadata).rsplit('/', 1)[-1],
+                'started_at': datetime.now(timezone.utc).isoformat()})
+            self.finished.clear()
+            threading.Thread(target=self._run_infographic, args=(dict(metadata), next_cron_time, app),
+                             daemon=True, name='infographic-raw-wake').start()
+            return True
+        except Exception:
+            self.finished.set()
+            self.lock.release()
+            raise
+
+    def _run_infographic(self, metadata, next_cron_time, app):
+        from commute_board import atomic_json
+        result = {'status': 'error', 'error': 'Delivery worker interrupted'}
+        filename = app.image_public_url(metadata).rsplit('/', 1)[-1]
+        try:
+            with tempfile.TemporaryDirectory(prefix='infographic-raw-', dir=self.infographic_receipt_path.parent) as directory:
+                directory = Path(directory)
+                source = app.latest_image_path(metadata, directory)
+                image_path = directory / (Path(filename).stem + '.png')
+                with Image.open(source) as original:
+                    fitted = ImageOps.pad(original.convert('RGB'), app.output_dimensions(),
+                                          method=Image.Resampling.LANCZOS, color='white')
+                    if self.config.display_orientation == 'landscape':
+                        fitted = fitted.transpose(Image.Transpose.ROTATE_270)
+                    fitted.save(image_path)
+                result = deliver_raw(image_path, self.config.device_base_url, self.config.expected_device_sn,
+                                     self.config.public_base_url, self.config.device_token, next_cron_time,
+                                     packer=pack_color)
+            LOG.info('Infographic raw wake display verified; next wake %s', next_cron_time)
+        except Exception as exc:
+            result = {'status': 'error', 'error': str(exc), 'finished_at': datetime.now(timezone.utc).isoformat()}
+            LOG.error('Infographic raw wake display failed: %s', type(exc).__name__)
+        finally:
+            try:
+                atomic_json(self.infographic_receipt_path, dict(result, snapshot_filename=filename,
+                    source_filename=metadata.get('image_filename'),
+                    display_date=str(metadata.get('display_date') or metadata.get('date'))))
+            finally:
+                self.finished.set()
+                self.lock.release()
 
     def _run(self, snapshot, next_cron_time):
         from commute_board import atomic_json
