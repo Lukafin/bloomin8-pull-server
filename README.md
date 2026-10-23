@@ -142,7 +142,22 @@ The optional `commute_delivery_mode: raw-on-wake` retains the frame's scheduled
 06:00 wake but bypasses its unreliable JPEG decode/dither path for the commuter
 board. Configure `device_base_url` to its current LAN URL and `expected_device_sn`
 to the verified exact frame serial. The HTTP server needs Pillow and requests in
-this mode. The infographic lane and its JPEG preparation remain unchanged.
+this mode. The infographic defaults to native JPEG for compatibility; on firmware
+with the same JPEG rendering failure, set `infographic_delivery_mode: raw-on-wake`
+as well. It uses the **same authenticated wake and frame lock**, but converts the
+reviewed original to the documented six-color palette (black, white, red, green,
+blue, yellow) and packs MSB-first 3-bit pixels on the server. It does not turn the
+infographic monochrome, regenerate it, or change the reviewed archive playlist.
+
+Infographic proof is stored separately as `infographic-delivery.json` beside the
+commuter snapshot. It identifies the exact source and local display date and
+requires both the observed writing/displaying→ready transition and next-wake
+read-back. Failed/unconfirmed delivery gets a retry wake instead of silently
+waiting until tomorrow. Successful current-edition callbacks are deduplicated;
+the next archive rotation day is a different edition even if a source repeats.
+Neither lane is triggered by readiness probes or a wrong device ID. Enabling
+this setting does **not** wake a sleeping frame; use its next native wake or ask
+the operator to wake it for a real test. A downloaded JPEG is not display proof.
 
 On the authenticated commuter pull, the server replies **HTTP 200**, with JSON
 `status: 204` and the next 07:45 wake **after** waiting up to 50 seconds for its
