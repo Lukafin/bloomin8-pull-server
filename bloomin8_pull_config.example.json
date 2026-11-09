@@ -5,6 +5,7 @@
   "commute_weekdays": [0, 1, 2, 3, 4],
   "commute_snapshot_path": null,
   "commute_delivery_mode": "native-jpeg",
+  "infographic_delivery_mode": "native-jpeg",
   "device_base_url": "",
   "expected_device_sn": "",
   "retry_interval_minutes": 15,

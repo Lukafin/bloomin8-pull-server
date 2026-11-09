@@ -45,6 +45,7 @@ class Config:
     commute_weekdays: tuple[int, ...] = tuple(range(7))
     commute_local_times: tuple[str, ...] = ()
     archive_rotation_path: Path | None = None
+    infographic_delivery_mode: str = "native-jpeg"
 
     def __post_init__(self) -> None:
         times = self.commute_local_times or (self.commute_local_time,)
@@ -65,6 +66,10 @@ class Config:
             raise ValueError("Unknown commute delivery mode")
         if self.commute_delivery_mode == "raw-on-wake" and not (self.commute_snapshot_path and self.device_base_url and self.expected_device_sn):
             raise ValueError("Raw-on-wake needs snapshot path, LAN device URL and exact serial")
+        if self.infographic_delivery_mode not in {"native-jpeg", "raw-on-wake"}:
+            raise ValueError("Unknown infographic delivery mode")
+        if self.infographic_delivery_mode == "raw-on-wake" and not (self.commute_snapshot_path and self.device_base_url and self.expected_device_sn):
+            raise ValueError("Infographic raw-on-wake needs private receipt path, LAN URL and exact serial")
 
     @property
     def timezone(self) -> ZoneInfo:
@@ -79,7 +84,7 @@ class PullServer:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.raw_delivery = None
-        if config.commute_delivery_mode == "raw-on-wake":
+        if "raw-on-wake" in {config.commute_delivery_mode, config.infographic_delivery_mode}:
             from frame_raw import RawWakeDelivery
             self.raw_delivery = RawWakeDelivery(config)
 
@@ -206,6 +211,10 @@ class PullServer:
         LOG.info("eink_pull requested: latest_date=%s today_local=%s cron_time=%s", latest_date, today_local, requested_cron_time)
 
         if latest_date == today_local:
+            if self.config.infographic_delivery_mode == "raw-on-wake":
+                next_time = self.display_slot(request_query)[1]
+                return {"status": 204, "message": "Infographic pixels use the authenticated native wake",
+                        "data": {"next_cron_time": next_time, "delivery": "infographic-raw-on-wake"}}
             return {
                 "status": 200,
                 "type": "SHOW",
@@ -231,7 +240,7 @@ class PullServer:
             retry = datetime.now(timezone.utc) + timedelta(minutes=1)
             retry = min(retry, datetime.fromisoformat(next_time.replace("Z", "+00:00")))
             return {"status": 204, "message": str(exc), "data": {"next_cron_time": utc_string(retry)}}
-        if self.raw_delivery is not None:
+        if self.config.commute_delivery_mode == "raw-on-wake":
             return {"status": 204, "message": "Commute pixel delivery uses the authenticated native wake",
                     "data": {"next_cron_time": next_time, "delivery": "raw-on-wake"}}
         return {"status": 200, "type": "SHOW", "message": "Morning commute snapshot",
@@ -402,6 +411,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             # Keep its pull open until raw rendering finishes, below the
             # documented ~60s native HTTP deadline.
             self.app.raw_delivery.wait(timeout=50)
+        if (self.app.raw_delivery is not None
+                and payload.get("data", {}).get("delivery") == "infographic-raw-on-wake"
+                and first_or_empty(query.get("device_id")) == self.app.config.expected_device_sn):
+            metadata = self.app.load_latest_metadata()
+            self.app.raw_delivery.start_infographic(metadata, payload["data"]["next_cron_time"], self.app)
+            self.app.raw_delivery.wait(timeout=50)
+            if not self.app.raw_delivery.infographic_verified(metadata, self.app):
+                payload["data"]["next_cron_time"] = min(self.app.retry_time_utc(), payload["data"]["next_cron_time"])
+                payload["message"] = "Infographic raw display unconfirmed; retry scheduled"
         self.respond_json(HTTPStatus.OK, payload)
 
     def handle_eink_signal(self, parsed) -> None:
@@ -501,6 +519,7 @@ def load_config(path: Path) -> Config:
         commute_delivery_mode=str(data.get("commute_delivery_mode", "native-jpeg")),
         device_base_url=str(data.get("device_base_url", "")),
         expected_device_sn=str(data.get("expected_device_sn", "")),
+        infographic_delivery_mode=str(data.get("infographic_delivery_mode", "native-jpeg")),
     )
 
 

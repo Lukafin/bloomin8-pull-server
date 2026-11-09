@@ -68,16 +68,29 @@ receipt at 06:05, 06:35 and 07:05. On a Europe/London scheduler this is two
 preparation jobs (`55 4,5 * * 1-5` and `25 5 * * 1-5`) and two verification
 jobs (`5 5,6 * * 1-5` and `35 5 * * 1-5`). Success stays silent.
 
-Set `archive_rotation_path` to a private frozen playlist JSON containing
+Set `archive_rotation_path` to a private reviewed playlist JSON containing
 `anchor_date`, ordered `filenames` and the corresponding archive `entries`.
 Keep verified original images in the sibling `images/` directory. The playlist
 must contain at least two older Slovenian entries with `age_6` suitability.
 Visually review actual images: metadata can be wrong about language and a
 landscape image can be illegible on a portrait frame. Selection is stable
 throughout each local calendar day, rotates without repetition until the list
-cycles, and **never** falls back to a newly generated `latest.json` image.
+cycles, and **never** falls back to an unchecked `latest.json` image.
 The original source date remains provenance; `display_date` identifies the
-current edition. The public archive and generation jobs are not changed.
+current edition. The public archive is not changed.
+
+The existing daily generation agent also follows [FRAME_REFRESH.md](FRAME_REFRESH.md)
+to admit at most one **published, visually reviewed** new image per Ljubljana
+day. `refresh_archive.py candidates` stages recent Slovenian age-6 portrait
+originals; `approve` or `reject` requires an actual visual review and audit note.
+Approval checks publication identity and exact hashes again, caches the original,
+backs up the playlist and atomically updates it. Tomorrow starts with the new
+image while today's exact choice is preserved; existing reviewed images remain
+as fallback. Admission failures leave the old playlist in use. The original
+cutoff is retained separately from the moving rotation anchor, so newer archive
+entries are not accidentally skipped. The running server reloads the playlist
+per request; no service restart, traffic schedule change or manual device push
+is involved.
 
 `rail_notices.py` reads official SŽ search RSS feeds for Kranj, Jesenice and
 Vižmarje. It deduplicates route-relevant replacement-bus notices, parses explicit
@@ -142,7 +155,22 @@ The optional `commute_delivery_mode: raw-on-wake` retains the frame's scheduled
 06:00 wake but bypasses its unreliable JPEG decode/dither path for the commuter
 board. Configure `device_base_url` to its current LAN URL and `expected_device_sn`
 to the verified exact frame serial. The HTTP server needs Pillow and requests in
-this mode. The infographic lane and its JPEG preparation remain unchanged.
+this mode. The infographic defaults to native JPEG for compatibility; on firmware
+with the same JPEG rendering failure, set `infographic_delivery_mode: raw-on-wake`
+as well. It uses the **same authenticated wake and frame lock**, but converts the
+reviewed original to the documented six-color palette (black, white, red, green,
+blue, yellow) and packs MSB-first 3-bit pixels on the server. It does not turn the
+infographic monochrome, regenerate it, or change the reviewed archive playlist.
+
+Infographic proof is stored separately as `infographic-delivery.json` beside the
+commuter snapshot. It identifies the exact source and local display date and
+requires both the observed writing/displaying→ready transition and next-wake
+read-back. Failed/unconfirmed delivery gets a retry wake instead of silently
+waiting until tomorrow. Successful current-edition callbacks are deduplicated;
+the next archive rotation day is a different edition even if a source repeats.
+Neither lane is triggered by readiness probes or a wrong device ID. Enabling
+this setting does **not** wake a sleeping frame; use its next native wake or ask
+the operator to wake it for a real test. A downloaded JPEG is not display proof.
 
 On the authenticated commuter pull, the server replies **HTTP 200**, with JSON
 `status: 204` and the next 07:45 wake **after** waiting up to 50 seconds for its
