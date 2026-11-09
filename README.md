@@ -68,16 +68,29 @@ receipt at 06:05, 06:35 and 07:05. On a Europe/London scheduler this is two
 preparation jobs (`55 4,5 * * 1-5` and `25 5 * * 1-5`) and two verification
 jobs (`5 5,6 * * 1-5` and `35 5 * * 1-5`). Success stays silent.
 
-Set `archive_rotation_path` to a private frozen playlist JSON containing
+Set `archive_rotation_path` to a private reviewed playlist JSON containing
 `anchor_date`, ordered `filenames` and the corresponding archive `entries`.
 Keep verified original images in the sibling `images/` directory. The playlist
 must contain at least two older Slovenian entries with `age_6` suitability.
 Visually review actual images: metadata can be wrong about language and a
 landscape image can be illegible on a portrait frame. Selection is stable
 throughout each local calendar day, rotates without repetition until the list
-cycles, and **never** falls back to a newly generated `latest.json` image.
+cycles, and **never** falls back to an unchecked `latest.json` image.
 The original source date remains provenance; `display_date` identifies the
-current edition. The public archive and generation jobs are not changed.
+current edition. The public archive is not changed.
+
+The existing daily generation agent also follows [FRAME_REFRESH.md](FRAME_REFRESH.md)
+to admit at most one **published, visually reviewed** new image per Ljubljana
+day. `refresh_archive.py candidates` stages recent Slovenian age-6 portrait
+originals; `approve` or `reject` requires an actual visual review and audit note.
+Approval checks publication identity and exact hashes again, caches the original,
+backs up the playlist and atomically updates it. Tomorrow starts with the new
+image while today's exact choice is preserved; existing reviewed images remain
+as fallback. Admission failures leave the old playlist in use. The original
+cutoff is retained separately from the moving rotation anchor, so newer archive
+entries are not accidentally skipped. The running server reloads the playlist
+per request; no service restart, traffic schedule change or manual device push
+is involved.
 
 `rail_notices.py` reads official SŽ search RSS feeds for Kranj, Jesenice and
 Vižmarje. It deduplicates route-relevant replacement-bus notices, parses explicit
